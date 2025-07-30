@@ -1,12 +1,13 @@
-const express = require('express');
+const express = require("express");
 const app = express();
 
-app.get('/', (req, res) => {
-  res.send('El bot sigue activo!');
-});
+function keepAlive() {
+  app.get("/", (req, res) => {
+    res.send("Bot activo!");
+  });
+  app.listen(3000, () => {
+    console.log("✅ KeepAlive activo en puerto 3000");
+  });
+}
 
-app.listen(3000, () => {
-  console.log('✅ Servidor de keepAlive activo en el puerto 3000');
-});
-
-module.exports = () => {};
+module.exports = { keepAlive };
