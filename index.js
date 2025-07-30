@@ -1,89 +1,154 @@
 const mineflayer = require('mineflayer');
-const autoeat = require('mineflayer-auto-eat');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
-const express = require('express');
-const keepAlive = require('./keepAlive');
+const { keepAlive } = require('./keepalive');
+const autoeat = require('mineflayer-auto-eat').plugin;
+const pvp = require('mineflayer-pvp').plugin;
+
 keepAlive();
+
+const OWNER = 'Erick25M'; // Cambia esto a tu nombre
 
 const bot = mineflayer.createBot({
   host: 'rabbit.fi.freemcserver.net',
   port: 30674,
-  username: 'BotTLauncher',
-  version: '1.20.1'
+  username: 'BotDunas'
 });
 
 bot.loadPlugin(pathfinder);
+bot.loadPlugin(pvp);
 bot.loadPlugin(autoeat);
 
-bot.once('spawn', () => {
-  console.log('🤖 El bot se ha conectado');
+let defaultMove;
+let following = false;
+let afk = false;
+let mobAttack = false;
+let attackMemory = {};
+let hostileAttack = false;
 
+bot.once('spawn', () => {
   const mcData = require('minecraft-data')(bot.version);
-  const defaultMove = new Movements(bot, mcData);
-  bot.pathfinder.setMovements(defaultMove);
+  defaultMove = new Movements(bot, mcData);
+  bot.chat('✅ Bot conectado. Usa "-bot help"');
 });
 
 bot.on('chat', (username, message) => {
   if (username === bot.username) return;
+  const isOp = username === OWNER;
 
-  if (message === '-botmc help') {
-    bot.chat('Comandos disponibles: -botmc ping, -botmc come, -botmc help');
+  if (message === '-bot help') {
+    bot.chat(`📜 Comandos: help, ping, seguir, calmar, comer, dormir, afk, mob, atacar <jugador> (solo OP)`);
   }
 
-  if (message === '-botmc ping') {
-    const { x, y, z } = bot.entity.position;
-    bot.chat(`📡 Ping: ${bot.player.ping}ms | 📍 XYZ: ${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)}`);
+  if (message === '-bot ping') {
+    bot.chat(`📶 Ping: ${bot.player.ping}ms`);
   }
 
-  if (message === '-botmc come') {
-    const foodItem = bot.inventory.items().find(item => item.name.includes('bread') || item.name.includes('beef'));
-    if (foodItem) {
-      bot.equip(foodItem, 'hand').then(() => bot.consume()).then(() => {
-        bot.chat('🍞 He comido algo.');
-      }).catch(() => bot.chat('❌ No pude comer.'));
-    } else {
-      bot.chat('🚫 No tengo comida.');
+  if (message === '-bot seguir') {
+    const target = bot.players[username]?.entity;
+    if (target) {
+      bot.chat(`👣 Siguiendo a ${username}`);
+      bot.pathfinder.setMovements(defaultMove);
+      bot.pathfinder.setGoal(new goals.GoalFollow(target, 1), true);
     }
   }
-});
 
-// Comer automáticamente si tiene hambre
-bot.on('health', () => {
-  if (bot.food < 20) {
-    bot.chat(`🍗 Tengo hambre. Nivel de comida: ${bot.food}/20`);
+  if (message === '-bot afk') {
+    afk = true;
+    bot.chat('🔄 Modo AFK activado');
+    doAFK();
   }
-});
 
-// Detectar si está muriendo
-bot.on('health', () => {
-  if (bot.health < 10) {
-    bot.chat(`☠️ ¡Me estoy muriendo! Vida: ${bot.health}/20`);
+  if (message === '-bot calmar') {
+    if (!attackMemory[username]) {
+      bot.chat(`✅ Te perdono, ${username}`);
+    } else if (attackMemory[username].warned && !attackMemory[username].attackedOnce) {
+      attackMemory[username] = null;
+      bot.chat(`😐 Está bien ${username}, calmado`);
+    } else {
+      bot.chat(`😡 Ya me engañaste una vez, ¡Prepárate!`);
+      const target = bot.players[username]?.entity;
+      if (target) bot.pvp.attack(target);
+    }
   }
-});
 
-// Dormir cuando hay una cama cerca y es de noche
-bot.on('time', () => {
-  if (!bot.isSleeping && bot.time.isNight && !bot.targetDigBlock) {
+  if (message === '-bot mob') {
+    mobAttack = true;
+    bot.chat('⚔️ Atacando mobs hostiles cercanos...');
+  }
+
+  if (message === '-bot dormir') {
     const bed = bot.findBlock({
       matching: block => bot.isABed(block),
-      maxDistance: 4
+      maxDistance: 5
     });
-
     if (bed) {
-      bot.chat('🛏️ Es de noche, intentaré dormir.');
-      bot.sleep(bed).catch(() => {
-        bot.chat('❌ No puedo dormir ahora.');
-      });
+      bot.chat('😴 Intentando dormir...');
+      bot.sleep(bed).catch(() => bot.chat('❌ No puedo dormir'));
+    } else {
+      bot.chat('❌ No hay cama cerca');
+    }
+  }
+
+  if (message === '-bot comer') {
+    bot.chat('🍗 Intentando comer...');
+    bot.autoEat.eat().catch(() => bot.chat('❌ No tengo comida o no tengo hambre'));
+  }
+
+  if (message.startsWith('-bot atacar ') && isOp) {
+    const targetName = message.split(' ')[2];
+    const target = bot.players[targetName]?.entity;
+    if (target) {
+      bot.chat(`🎯 Atacando a ${targetName}`);
+      bot.pvp.attack(target);
+    } else {
+      bot.chat(`❌ No encontré a ${targetName}`);
     }
   }
 });
 
-// Detectar ataques
 bot.on('entityHurt', (entity) => {
   if (entity === bot.entity) {
     const attacker = bot.nearestEntity(e => e.type === 'player');
-    if (attacker) {
-      bot.chat(`😡 ¡${attacker.username} me está atacando!`);
+    if (attacker && attacker.username !== OWNER) {
+      const name = attacker.username;
+      if (!attackMemory[name]) {
+        attackMemory[name] = { warned: true, attackedOnce: false };
+        bot.chat(`⚠️ ¡${name}, no me golpees! Una más y te ataco`);
+      } else if (!attackMemory[name].attackedOnce) {
+        attackMemory[name].attackedOnce = true;
+        bot.chat(`😡 ¡Ahora sí, ${name}!`);
+        bot.pvp.attack(attacker);
+      }
+    }
+
+    // También defenderse de mobs
+    const mob = bot.nearestEntity(e => e.type === 'mob' && e.position.distanceTo(bot.entity.position) < 3);
+    if (mob) {
+      bot.pvp.attack(mob);
     }
   }
 });
+
+// Atacar mobs automáticamente
+bot.on('physicsTick', () => {
+  if (!mobAttack) return;
+  const target = bot.nearestEntity(e =>
+    e.type === 'mob' &&
+    ['Zombie', 'Skeleton', 'Spider', 'Creeper', 'Husk', 'Drowned'].includes(e.mobType)
+  );
+  if (target) {
+    bot.pvp.attack(target);
+  }
+});
+
+// AFK automático
+function doAFK() {
+  if (!afk) return;
+  bot.setControlState('jump', true);
+  bot.setControlState('left', true);
+  setTimeout(() => {
+    bot.setControlState('jump', false);
+    bot.setControlState('left', false);
+    if (afk) setTimeout(doAFK, 3000);
+  }, 3000);
+}
