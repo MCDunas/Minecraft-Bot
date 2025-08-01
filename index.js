@@ -1,6 +1,6 @@
 const mineflayer = require('mineflayer');
 const keepAlive = require('./keepalive');
-
+require('./discordBot');
 const bot = mineflayer.createBot({
   host: 'rabbit.fi.freemcserver.net',
   port: 30674,
@@ -190,6 +190,3 @@ bot.on('entityHurt', entity => {
 bot.on('attacked', (data) => {
   attacker = data.attacker;
 });
-
-require('./discordBot');
-
