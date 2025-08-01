@@ -190,3 +190,6 @@ bot.on('entityHurt', entity => {
 bot.on('attacked', (data) => {
   attacker = data.attacker;
 });
+
+require('./discordBot');
+
