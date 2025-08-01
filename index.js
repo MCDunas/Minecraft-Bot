@@ -1,154 +1,192 @@
 const mineflayer = require('mineflayer');
-const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
-const { keepAlive } = require('./keepalive');
-const autoeat = require('mineflayer-auto-eat').plugin;
-const pvp = require('mineflayer-pvp').plugin;
-
-keepAlive();
-
-const OWNER = 'Erick25M'; // Cambia esto a tu nombre
+const keepAlive = require('./keepalive');
 
 const bot = mineflayer.createBot({
   host: 'rabbit.fi.freemcserver.net',
   port: 30674,
-  username: 'BotDunas'
+  username: 'BotDunas',
+  version: '1.20.1'
 });
 
-bot.loadPlugin(pathfinder);
-bot.loadPlugin(pvp);
-bot.loadPlugin(autoeat);
+keepAlive();
 
-let defaultMove;
-let following = false;
-let afk = false;
-let mobAttack = false;
-let attackMemory = {};
-let hostileAttack = false;
+let isAFK = false;
+let afkInterval;
+let attacker = null;
+let warnedPlayers = {};
+const OWNER = 'Erick25M';
 
 bot.once('spawn', () => {
-  const mcData = require('minecraft-data')(bot.version);
-  defaultMove = new Movements(bot, mcData);
-  bot.chat('✅ Bot conectado. Usa "-bot help"');
+  console.log('✅ Bot conectado como BotDunas');
 });
 
+// ========== COMANDOS ==========
 bot.on('chat', (username, message) => {
-  if (username === bot.username) return;
-  const isOp = username === OWNER;
+  if (username === bot.username || !message.startsWith('-bot')) return;
 
-  if (message === '-bot help') {
-    bot.chat(`📜 Comandos: help, ping, seguir, calmar, comer, dormir, afk, mob, atacar <jugador> (solo OP)`);
-  }
+  const args = message.slice(4).trim().split(/ +/g);
+  const command = args.shift().toLowerCase();
 
-  if (message === '-bot ping') {
-    bot.chat(`📶 Ping: ${bot.player.ping}ms`);
-  }
+  switch (command) {
+    case 'ping':
+      bot.chat('Pong!');
+      break;
 
-  if (message === '-bot seguir') {
-    const target = bot.players[username]?.entity;
-    if (target) {
-      bot.chat(`👣 Siguiendo a ${username}`);
-      bot.pathfinder.setMovements(defaultMove);
-      bot.pathfinder.setGoal(new goals.GoalFollow(target, 1), true);
-    }
-  }
+    case 'help':
+      bot.chat('Comandos: ping, help, comer, dormir, calmar, seguir, parar, afk, mob, atacar <jugador>');
+      break;
 
-  if (message === '-bot afk') {
-    afk = true;
-    bot.chat('🔄 Modo AFK activado');
-    doAFK();
-  }
+    case 'comer':
+      bot.chat('Intentando comer...');
+      eatFood();
+      break;
 
-  if (message === '-bot calmar') {
-    if (!attackMemory[username]) {
-      bot.chat(`✅ Te perdono, ${username}`);
-    } else if (attackMemory[username].warned && !attackMemory[username].attackedOnce) {
-      attackMemory[username] = null;
-      bot.chat(`😐 Está bien ${username}, calmado`);
-    } else {
-      bot.chat(`😡 Ya me engañaste una vez, ¡Prepárate!`);
-      const target = bot.players[username]?.entity;
-      if (target) bot.pvp.attack(target);
-    }
-  }
-
-  if (message === '-bot mob') {
-    mobAttack = true;
-    bot.chat('⚔️ Atacando mobs hostiles cercanos...');
-  }
-
-  if (message === '-bot dormir') {
-    const bed = bot.findBlock({
-      matching: block => bot.isABed(block),
-      maxDistance: 5
-    });
-    if (bed) {
-      bot.chat('😴 Intentando dormir...');
-      bot.sleep(bed).catch(() => bot.chat('❌ No puedo dormir'));
-    } else {
-      bot.chat('❌ No hay cama cerca');
-    }
-  }
-
-  if (message === '-bot comer') {
-    bot.chat('🍗 Intentando comer...');
-    bot.autoEat.eat().catch(() => bot.chat('❌ No tengo comida o no tengo hambre'));
-  }
-
-  if (message.startsWith('-bot atacar ') && isOp) {
-    const targetName = message.split(' ')[2];
-    const target = bot.players[targetName]?.entity;
-    if (target) {
-      bot.chat(`🎯 Atacando a ${targetName}`);
-      bot.pvp.attack(target);
-    } else {
-      bot.chat(`❌ No encontré a ${targetName}`);
-    }
-  }
-});
-
-bot.on('entityHurt', (entity) => {
-  if (entity === bot.entity) {
-    const attacker = bot.nearestEntity(e => e.type === 'player');
-    if (attacker && attacker.username !== OWNER) {
-      const name = attacker.username;
-      if (!attackMemory[name]) {
-        attackMemory[name] = { warned: true, attackedOnce: false };
-        bot.chat(`⚠️ ¡${name}, no me golpees! Una más y te ataco`);
-      } else if (!attackMemory[name].attackedOnce) {
-        attackMemory[name].attackedOnce = true;
-        bot.chat(`😡 ¡Ahora sí, ${name}!`);
-        bot.pvp.attack(attacker);
+    case 'dormir':
+      const bed = bot.findBlock({
+        matching: block => bot.isABed(block),
+        maxDistance: 6
+      });
+      if (bed) {
+        bot.sleep(bed).catch(err => bot.chat(`Error al dormir: ${err.message}`));
+      } else {
+        bot.chat('No encontré una cama cerca.');
       }
-    }
+      break;
 
-    // También defenderse de mobs
-    const mob = bot.nearestEntity(e => e.type === 'mob' && e.position.distanceTo(bot.entity.position) < 3);
-    if (mob) {
-      bot.pvp.attack(mob);
-    }
+    case 'calmar':
+      if (warnedPlayers[username]) {
+        if (warnedPlayers[username] > 3) {
+          bot.chat(`${username}, no me engañes. ¡Ahora te atacaré!`);
+          attackPlayer(username);
+        } else {
+          warnedPlayers[username] = 0;
+          bot.chat(`${username} se ha calmado.`);
+        }
+      }
+      break;
+
+    case 'afk':
+      toggleAFK();
+      break;
+
+    case 'seguir':
+      const target = bot.players[username]?.entity;
+      if (target) {
+        bot.chat('Te seguiré.');
+        followEntity(target);
+      } else {
+        bot.chat('No te veo.');
+      }
+      break;
+
+    case 'parar':
+      bot.clearControlStates();
+      bot.chat('Me detengo.');
+      break;
+
+    case 'mob':
+      bot.chat('Atacaré mobs hostiles automáticamente.');
+      setInterval(() => {
+        const target = bot.nearestEntity(entity => isHostileMob(entity));
+        if (target) attackEntity(target);
+      }, 3000);
+      break;
+
+    case 'atacar':
+      if (username !== OWNER) {
+        bot.chat('No tienes permiso para usar este comando.');
+        return;
+      }
+      const playerName = args[0];
+      if (!playerName) return bot.chat('Debes especificar un jugador.');
+      const targetPlayer = bot.players[playerName]?.entity;
+      if (targetPlayer) {
+        bot.chat(`Atacando a ${playerName}`);
+        attackEntity(targetPlayer);
+      } else {
+        bot.chat('No encuentro a ese jugador.');
+      }
+      break;
+
+    default:
+      bot.chat('Comando no reconocido.');
   }
 });
 
-// Atacar mobs automáticamente
-bot.on('physicsTick', () => {
-  if (!mobAttack) return;
-  const target = bot.nearestEntity(e =>
-    e.type === 'mob' &&
-    ['Zombie', 'Skeleton', 'Spider', 'Creeper', 'Husk', 'Drowned'].includes(e.mobType)
-  );
-  if (target) {
-    bot.pvp.attack(target);
+// ========== FUNCIONES ==========
+function toggleAFK() {
+  if (isAFK) {
+    clearInterval(afkInterval);
+    bot.clearControlStates();
+    isAFK = false;
+    bot.chat('Modo AFK desactivado.');
+  } else {
+    isAFK = true;
+    bot.chat('Modo AFK activado.');
+    afkInterval = setInterval(() => {
+      bot.setControlState('jump', true);
+      bot.setControlState('left', true);
+      setTimeout(() => {
+        bot.setControlState('jump', false);
+        bot.setControlState('left', false);
+      }, 1000);
+    }, 3000);
   }
-});
-
-// AFK automático
-function doAFK() {
-  if (!afk) return;
-  bot.setControlState('jump', true);
-  bot.setControlState('left', true);
-  setTimeout(() => {
-    bot.setControlState('jump', false);
-    bot.setControlState('left', false);
-    if (afk) setTimeout(doAFK, 3000);
-  }, 3000);
 }
+
+function eatFood() {
+  const food = bot.inventory.items().find(item => item.name.includes('bread') || item.name.includes('apple'));
+  if (food) {
+    bot.equip(food, 'hand').then(() => bot.consume()).catch(err => bot.chat('Error al comer: ' + err.message));
+  } else {
+    bot.chat('No tengo comida.');
+  }
+}
+
+function attackEntity(entity) {
+  bot.lookAt(entity.position.offset(0, entity.height, 0));
+  bot.attack(entity);
+}
+
+function attackPlayer(playerName) {
+  const target = bot.players[playerName]?.entity;
+  if (target) attackEntity(target);
+}
+
+function isHostileMob(entity) {
+  return entity.type === 'mob' &&
+    !['Villager', 'Armor Stand', 'Bat'].includes(entity.name);
+}
+
+function followEntity(entity) {
+  const interval = setInterval(() => {
+    if (!entity.isValid) {
+      clearInterval(interval);
+      return bot.chat('Dejé de seguir porque desapareciste.');
+    }
+    const pos = entity.position;
+    bot.lookAt(pos.offset(0, entity.height, 0));
+    bot.setControlState('forward', true);
+  }, 1000);
+}
+
+// ========== DEFENSA ==========
+bot.on('entityHurt', entity => {
+  if (entity === bot.entity && attacker) {
+    const name = attacker.username;
+    if (!warnedPlayers[name]) {
+      warnedPlayers[name] = 1;
+      bot.chat(`${name}, no me ataques.`);
+    } else if (warnedPlayers[name] === 1) {
+      warnedPlayers[name]++;
+      bot.chat(`${name}, te lo advierto...`);
+    } else {
+      bot.chat(`${name}, ahora me defiendo.`);
+      attackPlayer(name);
+    }
+  }
+});
+
+bot.on('attacked', (data) => {
+  attacker = data.attacker;
+});
